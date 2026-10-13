@@ -1,314 +1,563 @@
-سناریوی تمرینی: ساخت Internal Developer Platform (IDP)
-⁧ابزارها: Keycloak، ArgoCD، RabbitMQ، Backstage، Vault، PostgreSQL، OpenTelemetry، Loki، OpenCost، روی Linux و Kubernetes واقعی⁩
-۱. سناریوی کاربر (User Scenario)
-کاربر: سارا، developer جدید در شرکت فرضی «کمپانی».
-وضعیت فعلی (قبل از پلتفرم): سارا باید سرویس جدیدی به اسم payment-service بسازد. برای این کار باید از تیم DevOps بخواهد repo بسازد، pipeline تنظیم کند، manifestهای Kubernetes را بنویسد، دسترسی به RabbitMQ بگیرد و برای هر ابزار یک username و password جدا داشته باشد. این کار معمولاً چند روز طول می‌کشد.
-وضعیت هدف (بعد از پلتفرم):
-سارا فقط یک بار با حساب خودش در Keycloak وارد می‌شود و به Backstage، ArgoCD و RabbitMQ دسترسی دارد (SSO).
-در Backstage روی دکمه «Create» می‌زند و template «Python Service» را انتخاب می‌کند.
-نام سرویس (payment-service) را می‌نویسد و تأیید می‌کند.
-Backstage خودکار یک repo جدید با کد اسکلت و manifestها در Git می‌سازد و سرویس را در Catalog ثبت می‌کند.
-ArgoCD تغییر را در Git می‌بیند و سرویس را بدون هیچ دستور دستی deploy می‌کند.
-سرویس به RabbitMQ وصل می‌شود و پیام می‌فرستد و می‌گیرد.
-سارا وضعیت سلامت و sync سرویس را در همان صفحه Backstage می‌بیند.
-پشت صحنه (چیزهایی که سارا نمی‌بیند ولی همیشه کار می‌کنند):
-پسورد RabbitMQ را Vault و External Secrets به pod می‌رسانند؛ هیچ secret در Git نیست.
-Keycloak و Backstage روی PostgreSQL با CloudNativePG اجرا می‌شوند (۳ instance و backup خودکار).
-هر پیام یک trace با OpenTelemetry دارد که در Tempo و Grafana دیده می‌شود و لاگ‌هایش در Loki است.
-هزینه منابع هر سرویس در OpenCost دیده می‌شود.
-همه‌چیز روی کلاستر واقعی Kubernetes و چند ماشین Linux اجرا می‌شود، نه روی kind.
-کاربر دوم: رضا، با نقش viewers. او می‌تواند سرویس‌ها و وضعیتشان را ببیند، اما نمی‌تواند سرویس بسازد، sync کند یا queue حذف کند.
-معیار موفقیت: سارا در کمتر از ۱۰ دقیقه، بدون درخواست از تیم DevOps و بدون kubectl، یک سرویس زنده و متصل به صف پیام دارد.
-۲. چرا این سناریو را می‌خواهیم؟
-دلیل اصلی این است که این چهار ابزار به‌تنهایی کاربرد محدودی دارند، ولی کنار هم یک مسئله واقعی را حل می‌کنند: کاهش اصطکاک بین developer و زیرساخت.
-تمرین روی مسئله واقعی: در شرکت‌ها دقیقاً همین ترکیب (Backstage + ArgoCD + Keycloak) برای ساخت پلتفرم داخلی استفاده می‌شود. یادگیری کنار هم، از یادگیری جداگانه ارزشمندتر است.
-فهم ارتباط ابزارها: سخت‌ترین بخش DevOps نصب ابزار نیست، اتصال آن‌هاست: OIDC بین Keycloak و بقیه، Git به‌عنوان منبع حقیقت برای ArgoCD و template در Backstage.
-تمرین GitOps واقعی: بعد از bootstrap اولیه، هیچ kubectl apply دستی نداریم و هر تغییر از Git می‌گذرد.
-تمرین امنیت و دسترسی: نقش‌های platform-admins، developers و viewers نشان می‌دهند RBAC در عمل چطور کار می‌کند.
-تمرین معماری event-driven: RabbitMQ با سناریوی ساده order و notification، مفاهیم exchange، queue، DLQ و retry را ملموس می‌کند.
-۳. معرفی ابزارها
-Keycloak (هویت و SSO)
-سرور مدیریت هویت متن‌باز. کاربران، گروه‌ها و نقش‌ها را یک‌جا نگه می‌دارد و با OIDC به بقیه ابزارها login می‌دهد. نقش در سناریو: یک login برای همه، و تعیین نقش هر کاربر.
-ArgoCD (GitOps)
-ابزار deploy برای Kubernetes که وضعیت کلاستر را با آنچه در Git نوشته شده مقایسه و همگام می‌کند. نقش در سناریو: هر سرویس جدید که در Git ثبت شود، خودکار deploy می‌شود. خود Keycloak و RabbitMQ و Backstage هم از همین راه نصب می‌شوند (App of Apps / ApplicationSet).
-RabbitMQ (پیام‌رسان)
-message broker برای ارتباط غیرهمزمان بین سرویس‌ها. با Cluster Operator روی Kubernetes نصب می‌شود. نقش در سناریو: order-service پیام می‌فرستد و notification-service آن را مصرف می‌کند.
-Backstage (پورتال توسعه‌دهنده)
-پلتفرم پورتال داخلی از Spotify. سه کار اصلی دارد: Catalog سرویس‌ها، Software Template برای ساخت سرویس جدید، و پلاگین‌ها (مثل ArgoCD). نقش در سناریو: نقطه ورود developer؛ جایی که سرویس می‌سازد و وضعیتش را می‌بیند.
-Vault (مدیریت Secret)
-سرور نگهداری رمزنگاری‌شده پسوردها و توکن‌ها. نقش در سناریو: هیچ پسوردی در Git نیست؛ سرویس‌ها secret خود را از Vault و External Secrets می‌گیرند.
-PostgreSQL با CloudNativePG (دیتابیس)
-دیتابیس رابطه‌ای HA روی Kubernetes با Operator. نقش در سناریو: دیتابیس واقعی برای Keycloak و Backstage، با failover و backup.
-OpenTelemetry، Loki و Tempo (مشاهده‌پذیری)
-OpenTelemetry ردگیری (trace) تولید می‌کند، Tempo آن را نگه می‌دارد و Loki لاگ‌ها را جمع می‌کند؛ همه در Grafana دیده می‌شوند. نقش در سناریو: ردگیری یک پیام از order-service تا notification-service و پیدا کردن خطا از روی لاگ.
-OpenCost (هزینه منابع)
-گزارش مصرف و هزینه CPU، RAM و دیسک هر سرویس و namespace. نقش در سناریو: درست‌سایز کردن منابع و دیدن هزینه هر سرویس.
-Linux و Kubernetes (زیربنا)
-چند ماشین لینوکسی با kubeadm و Cilium، MetalLB و Longhorn. نقش در سناریو: مشکلات واقعی شبکه، دیسک و upgrade را تجربه می‌کنی، نه یک کلاستر ساده و بی‌مشکل.
-۴. زیرساخت پایه
-کلاستر لوکال: kind یا k3d همراه با ingress-nginx
-Git سرور لوکال: Gitea (بدون وابستگی به GitHub)
-دامنه‌های لوکال با *.localtest.me یا /etc/hosts
-در سناریوی اصلی، به‌جای kind از کلاستر واقعی استفاده می‌شود: چند ماشین لینوکسی با kubeadm (فاز ۰ و ۰.۵ در بخش ۹).
-۵. فازهای اجرا
-فاز ۱: Keycloak
-ساخت realm به اسم company
-ساخت گروه‌های platform-admins، developers، viewers و چند کاربر تستی
-ساخت سه client برای ArgoCD، Backstage و RabbitMQ Management
-هدف: با یک login، هر سه ابزار باز شود.
-فاز ۲: ArgoCD
-نصب و اتصال OIDC به Keycloak
-RBAC بر اساس گروه: platform-admins ادمین، developers فقط پروژه‌های خودشان
-ساختار App of Apps یا ApplicationSet تا بقیه ابزارها از Git deploy شوند
-فاز ۳: RabbitMQ
-نصب با RabbitMQ Cluster Operator از طریق ArgoCD
-اتصال management UI به Keycloak با OAuth2
-نوشتن order-service و notification-service
-تمرین: exchange، queue، binding، Dead Letter Queue، retry، و تست اینکه با kill کردن consumer پیام‌ها گم نمی‌شوند
-فاز ۴: Backstage
-نصب و login با Keycloak
-ثبت سرویس‌ها با catalog-info.yaml
-پلاگین ArgoCD برای دیدن وضعیت sync
-Software Template که repo جدید در Gitea بسازد و ArgoCD Application را خودکار ثبت کند
-فازهای تکمیلی (جزو سناریوی اصلی)
-فاز ۰ و ۰.۵: Linux و Kubernetes واقعی، قبل از فاز ۱ (بخش ۹)
-فاز ۱.۵: Vault، External Secrets و PostgreSQL؛ قبل از Keycloak و Backstage چون به دیتابیس و secret نیاز دارند (بخش ۱۵)
-فاز ۳.۵: مشاهده‌پذیری با Loki، OpenTelemetry، Tempo و Prometheus (بخش ۱۴ و ۱۵)
-فاز ۴.۵: هزینه با OpenCost، زنجیره تأمین (Harbor، Trivy، Cosign، Kyverno) و Argo Rollouts (بخش ۱۰ و ۱۵)
-۶. تست نهایی (End-to-End)
-ورود به Backstage با کاربر developers
-ساخت payment-service از template
-پیدا کردن و deploy خودکار توسط ArgoCD
-اتصال سرویس به RabbitMQ و ارسال پیام
-دیدن وضعیت سلامت در Backstage
-ورود با کاربر viewers و بررسی اینکه دسترسی نوشتن ندارد
-در نسخه کامل، این موارد هم باید تأیید شوند:
-ایمیج امضاشده و اسکن‌شده است و Kyverno ایمیج بدون امضا را رد می‌کند.
-پسورد از Vault می‌آید و در Git نیست.
-یک پیام در Tempo به‌صورت یک trace از order-service تا notification-service دیده می‌شود و لاگ‌اش در Loki است.
-با kill کردن primary در PostgreSQL، Keycloak پس از چند ثانیه دوباره کار می‌کند.
-هزینه payment-service در OpenCost دیده می‌شود.
-سناریوهای Game Day (بخش ۱۲) بدون از دست رفتن پیام تمام می‌شوند.
-۷. ابزارهای مکمل دیگر
-دسته
-ابزار
-کاربرد در سناریو
-Secrets
-External Secrets Operator + Vault
-پسوردها در Git نباشند
-TLS
-cert-manager
-certificate خودکار برای ingressها
-Observability
-Prometheus + Grafana + Loki
-مانیتور صف‌ها و لاگ‌ها
-Tracing
-OpenTelemetry
-ردگیری پیام از producer تا consumer
-Policy
-Kyverno
-اجبار resource limit روی Deploymentها
-Progressive delivery
-Argo Rollouts
-canary deployment
-CI
-Gitea Actions / Tekton + Harbor
-build و push ایمیج
-Autoscaling
-KEDA
-scale شدن consumer بر اساس طول صف RabbitMQ
-Infra as code
-Crossplane
-provision منابع از داخل کلاستر
-Dependency update
-Renovate
-آپدیت خودکار chart و ایمیج با PR
+from pathlib import Path
 
-۸. ترتیب اولیه (فازهای ۱ تا ۴)
-اول فاز ۱ تا ۳ (Keycloak، ArgoCD، RabbitMQ)، بعد Backstage چون سخت‌ترین است. سپس KEDA و External Secrets که بیشترین ارزش آموزشی را دارند.
-ترتیب کامل و نهایی با همه ابزارها در بخش ۱۳ آمده است.
-۹. زیرساخت اصلی: Linux و Kubernetes واقعی
-این بخش جزو سناریوی اصلی است و «زیرساخت پایه» (بخش ۴) را کامل می‌کند. به‌جای kind که همه‌چیز را قایم می‌کند، کلاستر واقعی روی چند ماشین Linux می‌سازی تا مشکلات واقعی را ببینی. سناریوی کاربر (سارا و رضا) همان می‌ماند؛ فقط زیرش سخت‌تر می‌شود.
-فاز ۰: لایه Linux
-چهار تا پنج VM بساز (Multipass، Vagrant + libvirt/KVM یا Proxmox) با Ubuntu Server یا Debian:
-۳ نود control-plane، ۲ نود worker، و در صورت امکان یک VM جدا برای Gitea و Harbor
-ساخت VMها با Terraform یا Vagrantfile، و تنظیم آن‌ها با Ansible (همه‌چیز تکرارپذیر؛ هیچ تنظیم دستی)
-آماده‌سازی نود برای Kubernetes: غیرفعال کردن swap، ماژول‌های overlay و br_netfilter، تنظیم sysctl برای forwarding، نصب containerd با SystemdCgroup
-Hardening پایه: SSH فقط با key، کاربر غیر root با sudo، فایروال nftables یا ufw، fail2ban، به‌روزرسانی خودکار امنیتی
-ذخیره‌سازی: دیسک جدا با LVM برای /var/lib/containerd و دیسک خام برای Longhorn یا Ceph
-ابزارهای عیب‌یابی که باید یاد بگیری: journalctl، systemctl، ss، tcpdump، strace، iostat، dmesg، crictl
-چالش: یک نود را عمداً با پر کردن دیسک یا kill کردن kubelet خراب کن و فقط با ابزارهای Linux علتش را پیدا کن.
-فاز ۰.۵: Kubernetes واقعی با kubeadm
-نصب کلاستر HA با kubeadm و سه control-plane، با HAProxy + keepalived (یا kube-vip) برای VIP سرور API
-CNI: Cilium (با eBPF و جایگزینی kube-proxy) به‌جای Flannel ساده
-LoadBalancer: MetalLB برای IP خارجی روی شبکه لوکال
-Ingress: ingress-nginx یا Gateway API (با Cilium Gateway)
-Storage: Longhorn یا Rook-Ceph برای PersistentVolume
-Backup: etcdctl snapshot save و restore کامل روی کلاستر تازه؛ همچنین Velero برای backup منابع و volumeها
-Upgrade: ارتقای کلاستر از یک minor version به نسخه بعدی (kubeadm upgrade)، نود به نود با drain و uncordon
-امنیت: RBAC دقیق، Pod Security Admission در حالت restricted، NetworkPolicy با رویکرد default-deny
-چالش: گواهی‌های کلاستر را منقضی‌شده فرض کن و با kubeadm certs renew درستشان کن.
-۱۰. فهرست کامل ابزارهای سناریو
-دسته
-ابزار
-چه چیزی به سناریو اضافه می‌کند
-Provisioning
-Terraform + Ansible
-ساخت و تنظیم VMها به‌صورت کد
-Database
-CloudNativePG (PostgreSQL Operator)
-دیتابیس HA برای Keycloak و Backstage، با backup خودکار
-Secrets
-Vault + External Secrets Operator
-هیچ secret در Git نیست؛ Vault با Kubernetes auth
-PKI
-cert-manager + Vault PKI یا step-ca
-CA داخلی و TLS خودکار بین همه سرویس‌ها
-Supply chain
-Harbor + Trivy + Cosign
-اسکن آسیب‌پذیری و امضای ایمیج
-Policy
-Kyverno
-فقط ایمیج امضاشده اجرا شود؛ resource limit اجباری باشد؛ latest ممنوع
-Runtime security
-Falco
-تشخیص رفتار مشکوک در کانتینر (مثلاً باز شدن shell)
-CI
-Gitea Actions + runner، یا Tekton
-build، تست، اسکن، امضا و push خودکار
-Progressive delivery
-Argo Rollouts
-canary با تحلیل خودکار از Prometheus و rollback
-Autoscaling
-KEDA
-scale شدن consumer بر اساس طول صف RabbitMQ
-Metrics
-kube-prometheus-stack
-داشبورد Grafana برای نودها، RabbitMQ و سرویس‌ها
-Logs
-Loki + Promtail (یا Alloy)
-لاگ مرکزی قابل جست‌وجو
-Tracing
-OpenTelemetry + Tempo
-ردگیری یک پیام از order-service تا notification-service
-Alerting
-Alertmanager
-هشدار وقتی صف رشد می‌کند یا DLQ پر می‌شود
-Chaos
-Chaos Mesh یا LitmusChaos
-خراب کردن عمدی pod و شبکه و نود
-Cost / hygiene
-Renovate + Kubecost (اختیاری)
-آپدیت خودکار وابستگی‌ها و دید هزینه منابع
+readme = r"""# سناریوی تمرینی: ساخت Internal Developer Platform (IDP)
 
-۱۱. چالش‌های هر ابزار
-Keycloak
-اجرا با ۲ replica و دیتابیس CloudNativePG؛ یک pod را بکش و ببین login قطع می‌شود یا نه.
-Role mapping: گروه‌های Keycloak را به نقش‌های ArgoCD، RabbitMQ (tag administrator) و Backstage نگاشت کن.
-Token را با jwt.io-مانند ابزار decode کن و claim groups را بررسی کن.
-ArgoCD
-چند کلاستر: یک کلاستر دوم (یا namespace جدا) را به‌عنوان staging ثبت کن و با ApplicationSet فقط با یک فایل به هر دو deploy کن.
-Sync waves و hooks: ترتیب نصب CRD، Operator، بعد instance را کنترل کن.
-Drift: یک resource را دستی تغییر بده و ببین selfHeal برش می‌گرداند.
-RabbitMQ
-Quorum Queue روی ۳ replica به‌جای classic queue؛ یک نود را بکش و ببین پیام‌ها می‌مانند.
-Prometheus metrics، TLS بین client و broker، و کاربر جدا برای هر سرویس با دسترسی حداقلی (vhost + permission).
-Publisher confirms، consumer ack دستی، idempotency (یک پیام دوبار نرسد اثر دوبار نگذارد)، و Poison message با DLQ.
-KEDA را با queueLength تنظیم کن و با load test (مثلاً PerfTest خود RabbitMQ) scale شدن را ببین.
-Backstage
-نصب با Helm و دیتابیس PostgreSQL واقعی (نه SQLite).
-Template سه‌مرحله‌ای: ساخت repo در Gitea، ثبت در Catalog، و ساخت ArgoCD Application.
-پلاگین‌های Kubernetes و Prometheus برای دیدن pod و متریک در صفحه سرویس.
-TechDocs: مستندات هر سرویس از docs/ در repo خودش ساخته شود.
-۱۲. سناریوی End-to-End نهایی و Game Day
-سارا (developers) وارد Backstage می‌شود و payment-service را از template می‌سازد.
-Pipeline در Gitea Actions ایمیج را build، با Trivy اسکن، با Cosign امضا و در Harbor push می‌کند.
-Kyverno ایمیج امضاشده را قبول می‌کند؛ ایمیج بدون امضا رد می‌شود (این را عمداً تست کن).
-ArgoCD سرویس را با canary (Argo Rollouts) deploy می‌کند و اگر error rate در Prometheus بالا رفت، خودش rollback می‌کند.
-سرویس secretها را از Vault (از طریق External Secrets) می‌گیرد و با کاربر اختصاصی به RabbitMQ وصل می‌شود.
-در Grafana و Tempo یک پیام را از ابتدا تا انتها دنبال می‌کنی.
-رضا (viewers) وارد می‌شود و هیچ دسترسی نوشتن ندارد؛ هر تلاش او در لاگ ثبت می‌شود.
-سناریوهای خرابی (Game Day)
-بعد از کار کردن همه‌چیز، با Chaos Mesh یا دستی این‌ها را امتحان کن و برای هرکدام یک postmortem کوتاه بنویس:
-یک نود worker ناگهان خاموش شود
-یک control-plane از کار بیفتد (آیا API هنوز جواب می‌دهد؟)
-etcd خراب شود و باید از snapshot restore کنی
-DNS داخلی (CoreDNS) از کار بیفتد
-دیسک نودی که RabbitMQ روی آن است پر شود
-Vault sealed شود (secretها چه می‌شوند؟)
-یک commit بد در Git باعث خراب شدن deploy شود و باید با ArgoCD rollback کنی
-۱۳. ترتیب نهایی اجرا
-فاز ۰ و ۰.۵: Linux و Kubernetes با kubeadm (حدود ۲ هفته؛ اینجا بیشترین یادگیری است)
-Cilium، MetalLB، Longhorn، cert-manager، Vault و External Secrets
-Keycloak و ArgoCD و App of Apps (از اینجا به بعد فقط Git)
-RabbitMQ با Quorum Queue و سرویس‌ها و KEDA
-Observability: Prometheus، Loki، Tempo
-Backstage و Template
-Supply chain (Harbor، Trivy، Cosign، Kyverno) و Argo Rollouts
-Game Day و نوشتن postmortem
-پیشنهاد: اگر هدفت گواهی است، فاز ۰.۵ تقریباً تمرین مستقیم CKA و CKS است (kubeadm، etcd backup، upgrade، NetworkPolicy، RBAC، Falco و امنیت supply chain).
-۱۴. OpenTelemetry: ردگیری کامل یک پیام
-هدف این بخش این است که یک سفارش را از order-service تا RabbitMQ و بعد notification-service در یک trace واحد ببینی؛ یعنی دقیقاً همان چیزی که بدون tracing در سیستم‌های پیام‌محور دیده نمی‌شود.
-اجزا
-OpenTelemetry Operator روی کلاستر، که Collector و auto-instrumentation را مدیریت می‌کند (نصب از طریق ArgoCD)
-OTel Collector در حالت DaemonSet برای جمع‌آوری و Deployment برای پردازش و ارسال
-Tempo برای نگهداری traceها، Prometheus برای متریک و Loki برای لاگ
-Grafana با اتصال بین سه سیگنال (از روی یک trace به لاگ و متریک همان سرویس برو)
-مراحل اجرا
-Operator و Collector را با ArgoCD نصب کن و خروجی traceها را به Tempo بده.
-در order-service و notification-service کتابخانه OpenTelemetry SDK را اضافه کن (Python، Go یا Node).
-هنگام publish، اطلاعات trace را در header پیام RabbitMQ بگذار (traceparent، استاندارد W3C Trace Context).
-در consumer، همان header را بخوان تا span جدید زیر همان trace ساخته شود.
-در Backstage، لینک مستقیم به Grafana و Tempo را در صفحه سرویس بگذار.
-در template سرویس جدید، instrumentation به‌صورت پیش‌فرض فعال باشد تا payment-service هم بدون کار اضافه trace داشته باشد.
-چالش‌ها
-یک پیام را عمداً در consumer دیر پردازش کن و در Tempo ببین کدام span کند است.
-پیامی را به DLQ بفرست و ببین trace آن چطور ادامه پیدا می‌کند (retry چند span می‌سازد؟).
-Sampling را تنظیم کن: ۱۰۰٪ در staging و ۱۰٪ یا tail-based sampling فقط برای خطاها در production.
-از روی یک trace به لاگ همان request برو، با trace_id در لاگ‌ها (correlation).
-یک هشدار بساز که اگر تأخیر بین publish و consume از ۵ ثانیه بیشتر شد فعال شود.
-۱۵. چهار ابزار تکمیلی: Vault، Loki، PostgreSQL و Cost
-این چهار ابزار قبلاً فقط در جدول بخش ۱۰ بودند. اینجا هرکدام نقش، مراحل نصب و چالش خودش را دارد.
-۱۵.۱ Vault: مدیریت Secret
-Vault تمام پسوردها و توکن‌ها را رمزنگاری‌شده نگه می‌دارد تا هیچ secret در Git نباشد.
-نصب Vault با Helm در حالت HA و ذخیره‌سازی Raft (روی ۳ replica)
-فعال کردن Kubernetes auth تا هر ServiceAccount فقط به secretهای خودش برسد
-اتصال External Secrets Operator به Vault و ساخت ExternalSecret برای پسورد RabbitMQ و Keycloak
-استفاده از Vault PKI برای صدور certificate داخلی، همراه cert-manager
-فعال کردن audit log برای دیدن اینکه چه کسی کدام secret را خوانده
-چالش: Vault را عمداً sealed کن و ببین سرویس‌های در حال اجرا و pod جدید چه می‌شوند؛ بعد با unseal برگردان.
-چالش: برای دیتابیس، dynamic secret بساز (username موقت با TTL یک ساعت).
-۱۵.۲ Loki: لاگ مرکزی
-Loki لاگ همه podها را جمع می‌کند و در Grafana با زبان LogQL جست‌وجو می‌شود.
-نصب Loki در حالت Simple Scalable یا Distributed، با ذخیره‌سازی روی MinIO (سازگار با S3)
-جمع‌آوری لاگ با Grafana Alloy (یا Promtail) به‌صورت DaemonSet روی هر نود
-لاگ ساختارمند JSON در سرویس‌ها، با فیلد trace_id برای اتصال به Tempo
-Retention مثلاً ۷ روز برای dev و ۳۰ روز برای production
-نوشتن چند کوئری LogQL: خطاهای payment-service در ۵ دقیقه اخیر، تعداد پیام‌های DLQ، و login ناموفق Keycloak
-چالش: یک هشدار از روی لاگ بساز (مثلاً بیش از ۱۰ خطا در دقیقه) و در Alertmanager ثبتش کن.
-چالش: حجم لاگ را در Grafana ببین و بفهم کدام namespace بیشترین هزینه ذخیره‌سازی را دارد.
-۱۵.۳ PostgreSQL: دیتابیس واقعی
-Keycloak و Backstage هر دو به دیتابیس نیاز دارند و نباید از دیتابیس داخلی یا SQLite استفاده کنند.
-نصب CloudNativePG Operator از طریق ArgoCD
-ساخت یک Cluster با ۳ instance (یک primary و دو replica) و دو دیتابیس جدا: keycloak و backstage
-هر برنامه کاربر و پسورد اختصاصی خودش را دارد (پسورد از Vault و ESO)
-Backup خودکار به MinIO یا S3 با WAL archiving و امکان بازگردانی به یک لحظه مشخص (PITR)
-Connection pooling با PgBouncer که خود CloudNativePG پشتیبانی می‌کند
-متریک‌ها در Prometheus و داشبورد آماده Grafana
-چالش: pod primary را بکش و ببین failover چند ثانیه طول می‌کشد و Keycloak چه می‌شود.
-چالش: جدولی را عمداً حذف کن و با PITR به ۵ دقیقه قبل برگردان.
-چالش: نسخه PostgreSQL را با rolling update ارتقا بده.
-۱۵.۴ Cost: دید هزینه منابع
-منظور هزینه مصرف CPU، RAM و دیسک هر سرویس و تیم است، حتی روی کلاستر لوکال، تا عادت درست‌سایز کردن منابع شکل بگیرد.
-نصب OpenCost (پروژه متن‌باز CNCF) یا Kubecost، با داده از Prometheus
-قیمت فرضی برای هر vCPU و هر GB رم تعریف کن (مثلاً قیمت یک ابر معمولی)
-برچسب team و app روی همه workloadها (با Kyverno اجباری شود)
-گزارش هزینه هر namespace: keycloak، rabbitmq، backstage، payment-service
-پیدا کردن workloadهایی که request منابع بیشتر از مصرف واقعی دارند (over-provisioned)
-ابزار کمکی: VPA در حالت توصیه‌گر، برای پیشنهاد request و limit درست
-چالش: منابع payment-service را بر اساس پیشنهاد VPA کم کن و اثرش را در گزارش هزینه ببین.
-چالش: یک Kyverno policy بنویس که deploy بدون برچسب team را رد کند.
+> **هدف:** ساخت یک پلتفرم توسعه‌دهنده داخلی روی Linux و Kubernetes واقعی؛ به‌طوری‌که یک توسعه‌دهنده بتواند بدون درخواست دستی از تیم DevOps، سرویس جدیدی بسازد، آن را deploy کند و وضعیتش را ببیند.
 
+## فهرست مطالب
 
+- [۱. سناریوی کاربر](#۱-سناریوی-کاربر)
+- [۲. چرا این سناریو را اجرا می‌کنیم؟](#۲-چرا-این-سناریو-را-اجرا-میکنیم)
+- [۳. معرفی ابزارها](#۳-معرفی-ابزارها)
+- [۴. زیرساخت پایه](#۴-زیرساخت-پایه)
+- [۵. فازهای اجرا](#۵-فازهای-اجرا)
+- [۶. تست نهایی](#۶-تست-نهایی-end-to-end)
+- [۷. ابزارهای مکمل](#۷-ابزارهای-مکمل)
+- [۸. ترتیب اولیه اجرا](#۸-ترتیب-اولیه-اجرا)
+- [۹. زیرساخت اصلی: Linux و Kubernetes واقعی](#۹-زیرساخت-اصلی-linux-و-kubernetes-واقعی)
+- [۱۰. فهرست کامل ابزارها](#۱۰-فهرست-کامل-ابزارها)
+- [۱۱. چالش‌های هر ابزار](#۱۱-چالشهای-هر-ابزار)
+- [۱۲. سناریوی End-to-End و Game Day](#۱۲-سناریوی-end-to-end-و-game-day)
+- [۱۳. ترتیب نهایی اجرا](#۱۳-ترتیب-نهایی-اجرا)
+- [۱۴. مشاهده‌پذیری و OpenTelemetry](#۱۴-مشاهدهپذیری-و-opentelemetry)
+- [۱۵. ابزارهای تکمیلی: Vault، Loki، PostgreSQL و Cost](#۱۵-ابزارهای-تکمیلی-vault-loki-postgresql-و-cost)
 
+---
+
+## ۱. سناریوی کاربر
+
+### وضعیت فعلی
+
+سارا، توسعه‌دهنده جدید شرکت فرضی «کمپانی»، می‌خواهد سرویسی به نام `payment-service` بسازد. در وضعیت فعلی باید از تیم DevOps درخواست کند تا:
+
+- یک repository بسازد؛
+- CI/CD pipeline را تنظیم کند؛
+- manifestهای Kubernetes را آماده کند؛
+- دسترسی RabbitMQ را فراهم کند؛
+- برای ابزارهای مختلف حساب کاربری جداگانه ایجاد کند.
+
+این فرایند ممکن است چند روز طول بکشد.
+
+### وضعیت هدف
+
+سارا فقط یک‌بار با حساب خودش در Keycloak وارد سیستم می‌شود و از طریق SSO به Backstage و ابزارهای مجاز دسترسی پیدا می‌کند.
+
+1. در Backstage گزینه **Create** را انتخاب می‌کند.
+2. قالب **Python Service** را انتخاب می‌کند.
+3. نام `payment-service` را وارد و تأیید می‌کند.
+4. Backstage یک repository جدید در Git می‌سازد که شامل کد پایه، manifestها و فایل `catalog-info.yaml` است.
+5. سرویس در Backstage Catalog ثبت می‌شود.
+6. Argo CD تغییر Git را تشخیص می‌دهد و سرویس را deploy می‌کند.
+7. سرویس به RabbitMQ وصل می‌شود و پیام ارسال و دریافت می‌کند.
+8. سارا وضعیت سرویس و وضعیت Sync آن را از صفحه سرویس در Backstage می‌بیند.
+
+### پشت صحنه
+
+- Vault و External Secrets Operator، secretهای موردنیاز را به Kubernetes می‌رسانند؛ هیچ secretای در Git ذخیره نمی‌شود.
+- Keycloak و Backstage از PostgreSQL مدیریت‌شده توسط CloudNativePG استفاده می‌کنند.
+- OpenTelemetry traceها را تولید می‌کند؛ Tempo آن‌ها را ذخیره می‌کند و Loki لاگ‌ها را نگه می‌دارد.
+- Grafana محل مشاهده traceها، لاگ‌ها و metricها است.
+- OpenCost هزینه تقریبی منابع مصرفی هر سرویس را گزارش می‌کند.
+- تمام اجزا روی Linux و Kubernetes واقعی اجرا می‌شوند، نه صرفاً روی `kind`.
+
+### کاربران و دسترسی‌ها
+
+- `platform-admins`: مدیریت پلتفرم و زیرساخت.
+- `developers`: ساخت سرویس و مشاهده و مدیریت منابع مجاز خود.
+- `viewers`: مشاهده سرویس‌ها و وضعیت آن‌ها، بدون مجوز تغییر یا حذف.
+
+**معیار موفقیت:** سارا بتواند در کمتر از ۱۰ دقیقه، بدون اجرای `kubectl` و بدون درخواست از تیم DevOps، یک سرویس زنده و متصل به صف پیام بسازد.
+
+---
+
+## ۲. چرا این سناریو را اجرا می‌کنیم؟
+
+هدف اصلی کاهش اصطکاک میان توسعه‌دهنده و زیرساخت است. ابزارها به‌تنهایی ارزش محدودی دارند؛ ارزش اصلی از اتصال درست آن‌ها به یک جریان کاری کامل ایجاد می‌شود.
+
+این تمرین کمک می‌کند:
+
+- ابزارهای متداول IDP را در کنار یکدیگر یاد بگیریم؛
+- اتصال OIDC و SSO میان ابزارها را پیاده‌سازی کنیم؛
+- Git را به‌عنوان منبع حقیقت (Source of Truth) در GitOps به کار ببریم؛
+- ساخت سرویس را با Software Template خودکار کنیم؛
+- RBAC و دسترسی حداقلی (Least Privilege) را در عمل تمرین کنیم؛
+- معماری Event-driven و مفاهیمی مانند Exchange، Queue، Retry و DLQ را یاد بگیریم؛
+- خطاهای واقعی شبکه، ذخیره‌سازی، کلاستر و سرویس‌ها را عیب‌یابی کنیم.
+
+> نکته: «بدون kubectl» به معنی حذف ابزارهای مدیریتی از کار روزمره توسعه‌دهنده است؛ عملیات bootstrap، تعمیر و عیب‌یابی زیرساخت همچنان ممکن است به دسترسی مدیریتی نیاز داشته باشد.
+
+---
+
+## ۳. معرفی ابزارها
+
+| ابزار | نقش در سناریو |
+|---|---|
+| **Keycloak** | مدیریت هویت، کاربران، گروه‌ها، نقش‌ها و ورود یکپارچه با OIDC/SSO |
+| **Argo CD** | پیاده‌سازی GitOps؛ تطبیق وضعیت Kubernetes با وضعیت تعریف‌شده در Git |
+| **RabbitMQ** | پیام‌رسان برای ارتباط غیرهمزمان بین سرویس‌ها |
+| **Backstage** | پورتال توسعه‌دهندگان، Catalog، Software Templates و دسترسی یکپارچه به ابزارها |
+| **Vault** | نگهداری امن secretها، صدور credentialهای پویا و در صورت نیاز گواهی‌های داخلی |
+| **External Secrets Operator (ESO)** | همگام‌سازی secretهای Vault با Kubernetes Secret |
+| **CloudNativePG** | مدیریت PostgreSQL، replication، failover و backup |
+| **OpenTelemetry** | استانداردسازی تولید و انتقال trace، metric و log |
+| **Tempo** | ذخیره‌سازی distributed trace |
+| **Loki** | جمع‌آوری و جست‌وجوی logها |
+| **Prometheus** | جمع‌آوری metricها و تأمین داده برای alerting و تحلیل rollout |
+| **Grafana** | داشبورد و ارتباط میان metric، log و trace |
+| **OpenCost** | برآورد و تحلیل هزینه منابع Kubernetes |
+| **Linux و Kubernetes** | زیرساخت اجرایی و محیط تمرین عیب‌یابی واقعی |
+
+---
+
+## ۴. زیرساخت پایه
+
+برای توسعه اولیه می‌توان از `kind` یا `k3d` و یک Git server محلی استفاده کرد؛ اما هدف نهایی این سناریو، کلاستر چندنودی واقعی است.
+
+- **Git server:** Gitea، برای جلوگیری از وابستگی ضروری به GitHub.
+- **DNS آزمایشگاهی:** دامنه‌هایی مانند `*.localtest.me` یا ورودی‌های کنترل‌شده در `/etc/hosts`.
+- **Kubernetes:** چند ماشین Linux با `kubeadm`.
+- **شبکه:** Cilium و MetalLB یا راهکار معادل متناسب با محیط.
+- **ذخیره‌سازی:** Longhorn یا Rook-Ceph.
+- **ورودی و TLS:** Ingress/Gateway API و cert-manager.
+
+`kind` برای آزمایش سریع مناسب است؛ اما جای تمرین خرابی واقعی نود، ذخیره‌سازی و HA را نمی‌گیرد.
+
+---
+
+## ۵. فازهای اجرا
+
+### فاز ۱: Keycloak
+
+- ساخت realm به نام `company`.
+- ساخت گروه‌های `platform-admins`، `developers` و `viewers`.
+- ساخت کاربران آزمایشی برای هر نقش.
+- ساخت OIDC client برای Argo CD، Backstage و رابط مدیریت RabbitMQ، در صورت پشتیبانی و انتخاب روش سازگار.
+- تنظیم group/role claims در tokenها.
+
+**خروجی مورد انتظار:** هویت مرکزی و نقش‌های مشخص برای کاربران.
+
+### فاز ۲: Argo CD
+
+- نصب Argo CD و اتصال OIDC به Keycloak.
+- تعریف RBAC براساس گروه‌ها.
+- محدود کردن دسترسی developerها به projectها و applicationهای مجاز.
+- ساخت ساختار App of Apps یا ApplicationSet برای نصب ابزارهای پلتفرم از Git.
+- فعال‌کردن automated sync و در موارد مناسب self-heal و pruning.
+
+**خروجی مورد انتظار:** منابع Kubernetes از Git مدیریت شوند و تغییرات دستیِ خارج از Git قابل تشخیص و اصلاح باشند.
+
+### فاز ۳: RabbitMQ
+
+- نصب RabbitMQ با RabbitMQ Cluster Operator از طریق Argo CD.
+- پیکربندی دسترسی رابط مدیریتی با روش SSO/OAuth2 سازگار با نسخه و پلاگین‌های انتخاب‌شده؛ در غیر این صورت، مدیریت دسترسی از طریق روش احراز هویت پشتیبانی‌شده.
+- ساخت `order-service` به‌عنوان producer و `notification-service` به‌عنوان consumer.
+- تمرین Exchange، Queue، Binding، Dead Letter Queue، Retry و acknowledgement.
+- آزمایش رفتار پیام‌ها هنگام از کار افتادن consumer.
+
+**خروجی مورد انتظار:** پیام‌ها با الگوی قابل‌اعتماد بین سرویس‌ها جابه‌جا شوند.
+
+### فاز ۴: Backstage
+
+- نصب Backstage و اتصال آن به Keycloak.
+- استفاده از PostgreSQL واقعی؛ نه SQLite برای محیط نهایی.
+- ثبت سرویس‌ها با `catalog-info.yaml`.
+- افزودن پلاگین Argo CD برای مشاهده وضعیت sync و health.
+- ساخت Software Template برای ایجاد repository در Gitea، ثبت Catalog و ایجاد یا فعال‌سازی Argo CD Application.
+- افزودن لینک‌های Grafana، Tempo و مستندات سرویس.
+
+**خروجی مورد انتظار:** توسعه‌دهنده از یک پورتال، سرویس بسازد و وضعیت آن را مشاهده کند.
+
+### فازهای تکمیلی
+
+- **فاز ۰ و ۰.۵:** آماده‌سازی Linux و ساخت Kubernetes واقعی.
+- **فاز ۱.۵:** Vault، ESO و PostgreSQL؛ این لایه باید قبل از وابسته‌شدن سرویس‌ها به secret و دیتابیس آماده باشد.
+- **فاز ۳.۵:** Prometheus، Loki، Tempo و OpenTelemetry.
+- **فاز ۴.۵:** OpenCost، زنجیره تأمین نرم‌افزار، Kyverno و Argo Rollouts.
+
+---
+
+## ۶. تست نهایی (End-to-End)
+
+1. سارا با گروه `developers` وارد Backstage می‌شود.
+2. از قالب Python، سرویس `payment-service` را می‌سازد.
+3. repository و manifestها در Gitea ایجاد می‌شوند.
+4. Argo CD سرویس را به‌طور خودکار deploy می‌کند.
+5. سرویس از secret تأمین‌شده توسط Vault/ESO استفاده می‌کند.
+6. سرویس به RabbitMQ متصل می‌شود و پیام ارسال یا دریافت می‌کند.
+7. وضعیت health و sync در Backstage قابل مشاهده است.
+8. رضا با گروه `viewers` وارد می‌شود و می‌تواند اطلاعات را ببیند، اما مجوز ساخت، sync، تغییر یا حذف ندارد.
+
+در نسخه کامل، این موارد هم بررسی می‌شوند:
+
+- ایمیج اسکن و امضا شده است؛ Kyverno ایمیج فاقد امضای معتبر را رد می‌کند.
+- هیچ secretای در Git قرار ندارد.
+- trace پیام از producer تا consumer در Tempo دیده می‌شود و log مرتبط در Loki قابل جست‌وجو است.
+- با از دست رفتن primary دیتابیس، failover انجام می‌شود و سرویس‌ها پس از وقفه احتمالی به کار ادامه می‌دهند.
+- هزینه تقریبی `payment-service` در OpenCost قابل مشاهده است.
+- سناریوهای Game Day بدون از دست رفتن غیرمنتظره پیام اجرا می‌شوند.
+
+---
+
+## ۷. ابزارهای مکمل
+
+| دسته | ابزار | کاربرد |
+|---|---|---|
+| Secrets | Vault + External Secrets Operator | نگهداری و تزریق secret بدون ذخیره در Git |
+| TLS | cert-manager + Vault PKI یا step-ca | صدور و تمدید خودکار certificate |
+| Observability | Prometheus + Grafana + Loki | metric، داشبورد و log |
+| Tracing | OpenTelemetry + Tempo | دنبال‌کردن درخواست و پیام میان سرویس‌ها |
+| Policy | Kyverno | اعمال policy، الزام resource limits و کنترل image |
+| Progressive delivery | Argo Rollouts | Canary deployment و rollback براساس metric |
+| CI | Gitea Actions + runner یا Tekton | build، test، scan، sign و push ایمیج |
+| Registry | Harbor | نگهداری image و artifact |
+| Autoscaling | KEDA | مقیاس‌دادن consumer براساس طول صف RabbitMQ |
+| Infrastructure as Code | Terraform + Ansible | ساخت VMها و پیکربندی سیستم‌عامل |
+| Dependency updates | Renovate | به‌روزرسانی وابستگی‌ها با Pull Request |
+| Runtime security | Falco | تشخیص رفتار مشکوک در runtime |
+| Chaos engineering | Chaos Mesh یا LitmusChaos | آزمایش رفتار سیستم در شرایط خرابی |
+| Cost | OpenCost یا Kubecost | تحلیل هزینه و شناسایی مصرف بیش‌ازحد |
+
+---
+
+## ۸. ترتیب اولیه اجرا
+
+برای شروع، ابتدا Keycloak و Argo CD و RabbitMQ را به هم متصل کن و سپس Backstage را اضافه کن؛ Backstage به‌دلیل templateها و integrationها معمولاً پیچیده‌ترین بخش این زنجیره است.
+
+پس از اثبات جریان اصلی، ESO/Vault و KEDA را اضافه کن. بااین‌حال، در پیاده‌سازی نهایی باید وابستگی‌های دیتابیس و secret را پیش از سرویس‌هایی که به آن‌ها نیاز دارند آماده کرد. ترتیب کامل در بخش ۱۳ آمده است.
+
+---
+
+## ۹. زیرساخت اصلی: Linux و Kubernetes واقعی
+
+### فاز ۰: لایه Linux
+
+#### توپولوژی پیشنهادی
+
+- ۳ VM برای control plane.
+- ۲ VM برای worker.
+- در صورت امکان، یک VM جدا برای Gitea و Harbor.
+- سیستم‌عامل: Ubuntu Server یا Debian.
+- ساخت VMها با Multipass، Vagrant + libvirt/KVM یا Proxmox.
+- ساخت و تنظیم تکرارپذیر با Terraform/Vagrant و Ansible.
+
+منابع CPU، RAM و دیسک را براساس ظرفیت میزبان و اندازه workloadها انتخاب کن؛ برای اجرای همه اجزای این سناریو، منابع قابل‌توجهی لازم است.
+
+#### آماده‌سازی Linux
+
+- غیرفعال‌کردن swap طبق نیازمندی kubeadm.
+- بارگذاری ماژول‌های `overlay` و `br_netfilter`.
+- تنظیم `sysctl` برای forwarding و bridge networking.
+- نصب و پیکربندی `containerd` با `SystemdCgroup`.
+- فعال‌سازی SSH key و کاربر غیر root با `sudo`.
+- تنظیم firewall با `nftables` یا `ufw` با توجه به پورت‌های موردنیاز.
+- نصب به‌روزرسانی‌های امنیتی و تنظیم hardening پایه.
+- جداسازی فضای `/var/lib/containerd` عندالامکان و برنامه‌ریزی ذخیره‌سازی Longhorn/Ceph.
+
+#### ابزارهای عیب‌یابی
+
+`journalctl`، `systemctl`، `ss`، `tcpdump`، `strace`، `iostat`، `dmesg` و `crictl`.
+
+**چالش:** یک worker را با پرشدن دیسک یا متوقف‌کردن kubelet مختل کن. ابتدا با ابزارهای Linux علت را پیدا کن، سپس وضعیت Kubernetes را بررسی و سرویس را بازیابی کن.
+
+### فاز ۰.۵: Kubernetes با kubeadm
+
+- ساخت HA control plane با ۳ نود.
+- فراهم‌کردن endpoint ثابت API Server با HAProxy + Keepalived یا kube-vip.
+- نصب Cilium به‌عنوان CNI؛ استفاده از eBPF و جایگزینی kube-proxy را براساس تنظیمات انتخابی Cilium بررسی کن.
+- نصب MetalLB برای LoadBalancer IP در شبکه محلی.
+- نصب Ingress Controller یا استفاده از Gateway API.
+- نصب Longhorn یا Rook-Ceph برای PersistentVolume.
+- تهیه snapshot از etcd با `etcdctl` و تمرین restore روی کلاستر آزمایشی تازه.
+- استفاده از Velero برای backup منابع و volumeها، با توجه به سازگاری storage.
+- تمرین ارتقای minor version، نودبه‌نود با drain و uncordon.
+- تنظیم RBAC، Pod Security Admission در حالت `restricted` و NetworkPolicy با رویکرد default-deny.
+
+**چالش‌ها:**
+
+1. گواهی‌های کلاستر را در محیط آزمایشگاهی منقضی‌شده فرض کن و فرایند بررسی و تمدید را تمرین کن.
+2. از snapshot، etcd را روی محیط جدا بازیابی کن.
+3. یک worker را drain و سپس به کلاستر برگردان.
+4. دسترسی شبکه بین دو namespace را با NetworkPolicy محدود و نتیجه را بررسی کن.
+
+> عملیات خرابی و restore را ابتدا در محیط آزمایشگاهی انجام بده؛ به کلاستر یا داده‌های production دست نزن.
+
+---
+
+## ۱۰. فهرست کامل ابزارها
+
+| دسته | ابزار | خروجی مورد انتظار |
+|---|---|---|
+| Provisioning | Terraform + Ansible | ساخت VM و تنظیم تکرارپذیر سیستم‌عامل |
+| Database | CloudNativePG | PostgreSQL با replication، failover و backup |
+| Secrets | Vault + ESO | حذف secretهای ثابت از Git |
+| PKI | cert-manager + Vault PKI یا step-ca | گواهی داخلی و تمدید خودکار |
+| Supply chain | Harbor + Trivy + Cosign | اسکن و امضای image |
+| Policy | Kyverno | الزام امضا، label و resource limit |
+| Runtime security | Falco | تشخیص رفتار غیرعادی container |
+| CI | Gitea Actions + runner یا Tekton | build، test، scan، sign و push |
+| Progressive delivery | Argo Rollouts | Canary و rollback خودکار |
+| Autoscaling | KEDA | scale کردن consumer با طول صف |
+| Metrics | kube-prometheus-stack | metric و dashboard کلاستر و برنامه‌ها |
+| Logs | Loki + Grafana Alloy | جمع‌آوری و جست‌وجوی متمرکز log |
+| Tracing | OpenTelemetry + Tempo | trace انتها‌به‌انتها |
+| Alerting | Alertmanager | هشدار رشد صف، DLQ یا افزایش خطا |
+| Chaos | Chaos Mesh یا LitmusChaos | تمرین خرابی کنترل‌شده |
+| Cost | OpenCost یا Kubecost | گزارش مصرف منابع و هزینه تخمینی |
+| Dependency updates | Renovate | PR برای آپدیت وابستگی‌ها و imageها |
+
+---
+
+## ۱۱. چالش‌های هر ابزار
+
+### Keycloak
+
+- اجرای دو replica با PostgreSQL مدیریت‌شده توسط CloudNativePG.
+- حذف آزمایشی یک Pod و بررسی تداوم login.
+- نگاشت گروه‌های Keycloak به نقش‌های Argo CD، Backstage و RabbitMQ.
+- decode کردن token و بررسی claimهای `groups` و roleها.
+- بررسی انقضا، audience، redirect URI و تنظیمات OIDC.
+
+### Argo CD
+
+- ثبت یک کلاستر دوم یا محیط staging.
+- استفاده از ApplicationSet برای deploy یک برنامه در چند محیط.
+- کنترل ترتیب نصب CRD، Operator و instance با sync waves.
+- تغییر دستی یک resource و مشاهده رفتار self-heal.
+- آزمایش rollback از طریق Git؛ تغییرات را در Git اصلاح کن، نه با تغییرات دستی پایدار.
+
+### RabbitMQ
+
+- استفاده از Quorum Queue با ۳ عضو در محیطی که منابع کافی دارد.
+- از کار انداختن یک نود و بررسی پایداری پیام‌ها.
+- فعال‌کردن metrics و TLS.
+- ساخت کاربر اختصاصی هر سرویس و محدودکردن دسترسی به vhost و permissionهای لازم.
+- تمرین publisher confirms، manual consumer acknowledgements، idempotency و poison message با DLQ.
+- تنظیم KEDA براساس `queueLength` و آزمایش scale با RabbitMQ PerfTest.
+
+### Backstage
+
+- نصب با Helm یا روش استقرار انتخاب‌شده و اتصال به PostgreSQL.
+- ساخت template چندمرحله‌ای برای repository، Catalog و Argo CD Application.
+- افزودن پلاگین‌های Kubernetes، Argo CD و در صورت نیاز Prometheus.
+- فعال‌کردن TechDocs برای تولید مستندات از پوشه `docs/` هر repository.
+
+---
+
+## ۱۲. سناریوی End-to-End و Game Day
+
+### جریان موفق
+
+1. سارا با نقش `developers` وارد Backstage می‌شود.
+2. `payment-service` را از template می‌سازد.
+3. Gitea Actions یا Tekton، image را build، test و با Trivy اسکن می‌کند.
+4. image با Cosign امضا و در Harbor push می‌شود.
+5. Kyverno امضای معتبر را بررسی می‌کند و image مجاز را می‌پذیرد.
+6. آزمایش منفی انجام می‌شود: image بدون امضای معتبر باید رد شود.
+7. Argo CD سرویس را deploy می‌کند؛ Argo Rollouts در صورت نیاز Canary را اجرا می‌کند.
+8. اگر error rate از حد تعیین‌شده عبور کند، تحلیل rollout باید rollback را فعال کند.
+9. سرویس secretها را از Vault از طریق ESO می‌گیرد و با کاربر اختصاصی به RabbitMQ وصل می‌شود.
+10. یک پیام در Grafana/Tempo از producer تا consumer دنبال می‌شود.
+11. log متناظر در Loki پیدا می‌شود.
+12. رضا با نقش `viewers` اطلاعات را می‌بیند، اما نمی‌تواند منابع را تغییر دهد یا حذف کند.
+
+### Game Day
+
+هر خرابی را جداگانه و در محیط آزمایشگاهی اجرا کن. برای هر مورد، زمان تشخیص، اثر بر کاربر، علت ریشه‌ای، راهکار بازیابی و اقدام پیشگیرانه را در یک postmortem کوتاه ثبت کن.
+
+- خاموش‌شدن ناگهانی یک worker.
+- از دست رفتن یک control plane و بررسی پاسخ‌گویی API.
+- بازیابی etcd از snapshot.
+- از کار افتادن DNS داخلی (CoreDNS).
+- پرشدن دیسک نودی که RabbitMQ روی آن اجرا می‌شود.
+- sealed شدن Vault و بررسی اثر آن بر Podهای موجود و جدید.
+- یک commit معیوب در Git و بازیابی نسخه سالم از طریق Git.
+- قطع‌شدن موقت دسترسی به storage یا شبکه.
+- از دست رفتن consumer هنگام وجود پیام‌های تأییدنشده.
+
+**معیار پایان:** سرویس بازیابی شود، پیام‌ها طبق تضمین‌های طراحی‌شده مدیریت شوند و علت خرابی مستند شده باشد.
+
+---
+
+## ۱۳. ترتیب نهایی اجرا
+
+ترتیب پیشنهادی با توجه به وابستگی‌ها:
+
+1. **فاز ۰ — Linux:** ساخت VMها، شبکه، storage و hardening پایه.
+2. **فاز ۰.۵ — Kubernetes:** kubeadm HA، Cilium، MetalLB، storage، backup و RBAC.
+3. **زیرساخت پایه پلتفرم:** Git server، cert-manager و DNS/Ingress.
+4. **PostgreSQL و Secrets:** CloudNativePG، backup، Vault و ESO.
+5. **Keycloak:** realm، کاربران، گروه‌ها و OIDC.
+6. **Argo CD:** اتصال OIDC، RBAC و App of Apps/ApplicationSet.
+7. **RabbitMQ:** Operator، quorum queue، permissionها و سرویس‌های نمونه.
+8. **Observability:** Prometheus، Grafana، Loki، Tempo و OpenTelemetry.
+9. **Backstage:** Catalog، SSO، Software Template و پلاگین Argo CD.
+10. **Supply chain و Policy:** Harbor، Trivy، Cosign و Kyverno.
+11. **Progressive delivery و autoscaling:** Argo Rollouts و KEDA.
+12. **Cost و hygiene:** OpenCost، Renovate و پیشنهادهای VPA.
+13. **Game Day:** اجرای سناریوهای خرابی، بازیابی و postmortem.
+
+اگر هدف آمادگی گواهی باشد، بخش kubeadm، etcd backup/restore، upgrade، RBAC، NetworkPolicy و سخت‌سازی Kubernetes تمرین ارزشمندی برای مسیر CKA/CKS است؛ البته این سناریو به‌تنهایی جایگزین سرفصل رسمی آزمون نیست.
+
+---
+
+## ۱۴. OpenTelemetry: ردگیری کامل یک پیام
+
+### هدف
+
+یک پیام را در یک trace واحد از `order-service`، از طریق RabbitMQ، تا `notification-service` دنبال کن. این کار برای پیدا کردن تأخیر و خطا در معماری پیام‌محور ضروری است.
+
+### اجزا
+
+- OpenTelemetry Operator برای مدیریت Collector و قابلیت‌های instrumentation.
+- Collector به‌شکل DaemonSet برای دریافت داده‌های محلی و/یا Deployment برای پردازش و ارسال داده‌ها، متناسب با معماری.
+- Tempo برای نگهداری traceها.
+- Prometheus برای metricها.
+- Loki برای logها.
+- Grafana برای ارتباط میان trace، log و metric.
+
+### مراحل
+
+1. Operator و Collector را از طریق Argo CD نصب کن.
+2. خروجی traceها را به Tempo ارسال کن.
+3. در `order-service` و `notification-service`، OpenTelemetry SDK را اضافه کن.
+4. هنگام publish پیام RabbitMQ، context مربوط به trace را با header استاندارد W3C `traceparent` منتقل کن.
+5. consumer آن header را بخواند و span جدید را در همان trace ادامه دهد.
+6. logها را ساختارمند تولید کن و `trace_id` را در آن‌ها قرار بده.
+7. لینک Grafana و Tempo را در صفحه سرویس Backstage اضافه کن.
+8. instrumentation را در template سرویس‌های جدید فعال کن.
+
+### چالش‌ها
+
+- در consumer تأخیر عمدی ایجاد کن و span کند را پیدا کن.
+- پیام را به DLQ بفرست و رفتار trace را هنگام retry بررسی کن.
+- Sampling را برای staging روی ۱۰۰٪ تنظیم کن و برای production براساس حجم و نیاز، sampling مناسب انتخاب کن.
+- از یک trace به log مرتبط از طریق `trace_id` برو.
+- برای تأخیر بین publish و consume بیشتر از ۵ ثانیه هشدار تعریف کن.
+
+---
+
+## ۱۵. ابزارهای تکمیلی: Vault، Loki، PostgreSQL و Cost
+
+### ۱۵.۱ Vault: مدیریت Secret
+
+Vault secretها را به‌شکل رمزنگاری‌شده نگه می‌دارد و policy مشخص می‌کند هر هویت به کدام secret دسترسی دارد.
+
+#### مراحل
+
+1. Vault را با Helm نصب کن.
+2. برای HA از storage و معماری پشتیبانی‌شده، مانند integrated Raft با تعداد مناسب replica، استفاده کن.
+3. Kubernetes auth را فعال کن.
+4. برای هر ServiceAccount policy جداگانه و دسترسی حداقلی تعریف کن.
+5. ESO را به Vault متصل کن و برای credentialهای RabbitMQ و سایر برنامه‌ها `ExternalSecret` بساز.
+6. در صورت نیاز، Vault PKI را با cert-manager برای certificateهای داخلی یکپارچه کن.
+7. audit log را فعال کن و دسترسی به secretها را بررسی کن.
+
+#### چالش‌ها
+
+- Vault را در محیط آزمایشگاهی seal کن؛ اثر آن را بر دسترسی Podهای موجود و ساخت Pod جدید بررسی کن، سپس سرویس را امن بازیابی کن.
+- برای اتصال دیتابیس، dynamic secret با TTL یک‌ساعته بساز و انقضا و تمدید آن را بررسی کن.
+
+> Vault به‌طور معمول secretهای از قبل تزریق‌شده را از حافظه Pod حذف نمی‌کند. دسترسی برنامه‌های جدید یا refresh شدن secretها ممکن است تا بازگشت Vault مختل شود؛ این رفتار را در آزمایش ثبت کن.
+
+### ۱۵.۲ Loki: لاگ مرکزی
+
+#### مراحل
+
+1. Loki را با معماری متناسب با حجم داده نصب کن.
+2. برای ذخیره‌سازی پایدار، از object storage سازگار با S3 مانند MinIO استفاده کن، در صورت انتخاب معماری‌ای که به آن نیاز دارد.
+3. Grafana Alloy را به‌صورت DaemonSet اجرا کن تا logهای نود و Podها را جمع‌آوری کند.
+4. logهای برنامه را ساختارمند و شامل `trace_id` تولید کن.
+5. retention متناسب با محیط تعیین کن؛ برای نمونه، ۷ روز در dev و ۳۰ روز در production، مشروط به ظرفیت و سیاست نگهداری.
+
+#### نمونه کوئری‌های LogQL
+
+خطاهای `payment-service` در پنج دقیقه اخیر:
+
+```logql
+{app="payment-service"} |= "ERROR"
+```
+
+فقط لاگ‌های دارای شناسه trace:
+
+```logql
+{app="payment-service"} | json | trace_id != ""
+```
+
+برای استفاده از این کوئری‌ها، labelها و قالب واقعی log باید با آنچه برنامه تولید می‌کند تطبیق داده شوند.
+
+#### چالش‌ها
+
+- هشدار برای بیش از ۱۰ خطا در دقیقه بساز.
+- حجم log را بررسی کن و namespaceهای پرمصرف را شناسایی کن.
+- مطمئن شو labelهای با cardinality بالا مانند شناسه‌های منحصربه‌فرد درخواست را بی‌رویه به‌عنوان Loki label استفاده نمی‌کنی.
+
+### ۱۵.۳ PostgreSQL: دیتابیس Keycloak و Backstage
+
+#### مراحل
+
+1. CloudNativePG Operator را از طریق Argo CD نصب کن.
+2. یک Cluster با سه instance بساز: یک primary و دو replica.
+3. دیتابیس‌های `keycloak` و `backstage` را جدا بساز.
+4. برای هر برنامه user اختصاصی ایجاد کن.
+5. credentialها را از Vault و ESO تأمین کن.
+6. backup به MinIO یا S3، WAL archiving و Point-in-Time Recovery (PITR) را پیکربندی و آزمایش کن.
+7. در صورت نیاز، connection pooling را با PgBouncer یا قابلیت سازگار و پشتیبانی‌شده در نسخه انتخابی CloudNativePG فعال کن.
+8. metricهای PostgreSQL را به Prometheus بده و dashboard بساز.
+
+#### چالش‌ها
+
+- Pod مربوط به primary را در محیط آزمایشگاهی حذف کن و زمان failover و اثر آن بر Keycloak را اندازه بگیر.
+- در دیتابیس آزمایشی، حذف کنترل‌شده‌ای انجام بده و با PITR به زمان قبل از حذف برگرد.
+- rolling update نسخه PostgreSQL را طبق روش پشتیبانی‌شده تمرین کن.
+
+### ۱۵.۴ Cost: هزینه منابع
+
+OpenCost هزینه تخمینی CPU، RAM و سایر منابع قابل پشتیبانی را نشان می‌دهد. در کلاستر آزمایشگاهی هم می‌توان قیمت فرضی تعریف کرد تا اصول right-sizing تمرین شوند.
+
+#### مراحل
+
+1. OpenCost را نصب و اتصال آن به Prometheus را تنظیم کن.
+2. نرخ فرضی برای vCPU و هر GB RAM تعریف کن.
+3. labelهای `team` و `app` را روی workloadها اعمال کن.
+4. گزارش هزینه namespaceهایی مانند `keycloak`، `rabbitmq`، `backstage` و `payment-service` را بررسی کن.
+5. مصرف واقعی را با CPU/memory requests مقایسه کن.
+6. VPA را در حالت توصیه‌گر (recommendation-only) برای پیشنهاد request مناسب به کار ببر.
+7. در صورت نیاز، با Kyverno الزام وجود labelها را اعمال کن.
+
+#### چالش‌ها
+
+- requestهای `payment-service` را براساس پیشنهاد VPA و با احتیاط تنظیم کن و گزارش هزینه را دوباره بررسی کن.
+- policyای بنویس که Deployment فاقد label `team` را رد کند.
+- مشخص کن کدام هزینه‌ها تخمینی هستند و کدام هزینه‌های واقعی زیرساخت خارج از محاسبات OpenCost قرار دارند.
+
+---
+
+## تعریف پایان پروژه
+
+پروژه زمانی کامل است که:
+
+- [ ] زیرساخت Linux و Kubernetes قابل بازسازی و مستند باشد.
+- [ ] بیشتر منابع پلتفرم پس از bootstrap از Git مدیریت شوند.
+- [ ] ورود یکپارچه و نقش‌های `platform-admins`، `developers` و `viewers` تست شده باشند.
+- [ ] Backstage بتواند سرویس جدید را از template ایجاد کند.
+- [ ] Argo CD سرویس را از Git deploy کند.
+- [ ] secret در Git وجود نداشته باشد و از مسیر Vault/ESO تأمین شود.
+- [ ] producer و consumer از RabbitMQ استفاده کنند و رفتار failure آزمایش شده باشد.
+- [ ] log، metric و trace در ابزارهای مربوط قابل مشاهده باشند.
+- [ ] policy امضای image و الزام labelها تست شده باشد.
+- [ ] گزارش هزینه تقریبی سرویس قابل مشاهده باشد.
+- [ ] حداقل چند Game Day اجرا و برای هرکدام postmortem نوشته شده باشد.
+
+## نکات عملیاتی
+
+- نسخه ابزارها، chartها و Operatorها را pin کن و تغییر نسخه را از طریق Pull Request انجام بده.
+- credential، token، private key و kubeconfig را در Git commit نکن.
+- برای هر سرویس ServiceAccount و مجوزهای حداقلی بساز.
+- backup فقط وقتی قابل اتکاست که restore آن عملاً آزمایش شده باشد.
+- HA به‌تنهایی جایگزین backup، مانیتورینگ و تمرین بازیابی نیست.
+- ابتدا مسیر ساده‌ی «ساخت سرویس → deploy → پیام RabbitMQ» را کامل کن؛ سپس ابزارهای امنیت، مشاهده‌پذیری، هزینه و chaos را مرحله‌ای اضافه کن.
+"""
+path = Path("/mnt/data/IDP-Scenario-README.md")
+path.write_text(readme, encoding="utf-8")
+print(f"Created: {path}\nSize: {path.stat().st_size:,} bytes")
 
